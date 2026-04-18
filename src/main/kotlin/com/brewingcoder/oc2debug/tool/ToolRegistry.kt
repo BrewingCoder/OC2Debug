@@ -6,11 +6,16 @@ package com.brewingcoder.oc2debug.tool
  */
 object ToolRegistry {
     val tools: Map<String, Tool> = listOf(
+        GameStateTool,
         ScreenshotTool,
         GetBlockTool,
         SetBlockTool,
         SimulateRightClickTool,
         WaitTicksTool,
         DispatchCommandTool,
+        ListComputersTool,
+        ReadComputerConsoleTool,
+        WriteComputerFileTool,
+        RunComputerCommandTool,
     ).associateBy { it.name }
 }
