@@ -17,5 +17,11 @@ object ToolRegistry {
         ReadComputerConsoleTool,
         WriteComputerFileTool,
         RunComputerCommandTool,
+        FindBiomeTool,
+        TeleportTool,
+        ScanChunkTool,
+        ScanAreaTool,
+        GetInventoryTool,
+        ReadMonitorTool,
     ).associateBy { it.name }
 }
