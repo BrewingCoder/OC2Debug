@@ -91,7 +91,7 @@ class McpHttpServer(private val port: Int) {
             sendJson(exchange, 200, resp)
         } catch (e: Exception) {
             OC2Debug.LOGGER.error("MCP request failed", e)
-            sendErrorWithId(exchange, id, -32603, "Internal error: ${e.message}")
+            sendErrorWithId(exchange, id, -32603, "Internal error: ${e.message ?: e.toString()}")
         }
     }
 

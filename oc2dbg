@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""oc2dbg — thin CLI for the OC2Debug MCP server on port 9876.
+
+State / observation:
+  oc2dbg state                              game state snapshot
+  oc2dbg screenshot                         take in-game screenshot
+  oc2dbg get_block <x> <y> <z>             block info at coords
+
+World lifecycle:
+  oc2dbg worlds                             list all single-player worlds
+  oc2dbg load <world_id>                    load a world (blocks until in-game)
+  oc2dbg quit                               save and return to main menu
+  oc2dbg new_world [name] [--flat] [--seed S] [--mode creative|survival]
+                                            create + load a fresh world
+
+UI navigation:
+  oc2dbg click <label>                      click a UI button by label text
+  oc2dbg wait_screen [class_name]           wait for a specific screen (or none)
+
+Player control:
+  oc2dbg look <yaw> <pitch>                 set look direction (degrees)
+  oc2dbg input [keys...] <ticks>            hold keys for N ticks
+                                            keys: forward back left right jump sprint attack use
+  oc2dbg teleport <x> <y> <z>              teleport player
+  oc2dbg fly_speed <multiplier>             set fly speed (1.0 = default 0.05)
+
+Commands:
+  oc2dbg cmd <command...>                   run server command (no leading /)
+
+OC2 computers:
+  oc2dbg computers                          list loaded OC2 computers
+  oc2dbg console <computer_id>              read computer terminal output
+  oc2dbg run <computer_id> <script>         run a script on a computer
+
+Generic:
+  oc2dbg call <tool> '<json>'               call any tool with raw JSON args
+  oc2dbg list                               list all available tools
+"""
+import sys
+import json
+import urllib.request
+import urllib.error
+import argparse
+
+PORT = 9876
+URL = f"http://127.0.0.1:{PORT}/mcp"
+TOOL_TIMEOUT = 120  # seconds; load_world / create_world can take a while
+
+
+def rpc(method: str, params: dict, timeout: int = 10):
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(URL, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            resp = json.loads(r.read())
+    except urllib.error.URLError as e:
+        print(f"ERROR: cannot reach oc2debug on port {PORT} — is MC running with the mod loaded? ({e})", file=sys.stderr)
+        sys.exit(1)
+    if "error" in resp:
+        print(f"ERROR: {resp['error']['message']}", file=sys.stderr)
+        sys.exit(1)
+    return resp["result"]
+
+
+def call_tool(name: str, args: dict, timeout: int = TOOL_TIMEOUT):
+    result = rpc("tools/call", {"name": name, "arguments": args}, timeout=timeout)
+    for item in result.get("content", []):
+        if item.get("type") == "text":
+            text = item["text"]
+            try:
+                parsed = json.loads(text)
+                print(json.dumps(parsed, indent=2))
+            except Exception:
+                print(text)
+    return result
+
+
+def cmd_list():
+    result = rpc("tools/list", {})
+    for tool in result.get("tools", []):
+        print(f"  {tool['name']:30s}  {tool['description']}")
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+
+    subcmd = argv[0]
+    rest = argv[1:]
+
+    # ── State / observation ───────────────────────────────────────────────────
+    if subcmd == "state":
+        call_tool("game_state", {})
+
+    elif subcmd == "screenshot":
+        call_tool("screenshot", {})
+
+    elif subcmd == "get_block":
+        if len(rest) < 3:
+            print("Usage: oc2dbg get_block <x> <y> <z>", file=sys.stderr); sys.exit(1)
+        call_tool("get_block", {"x": int(rest[0]), "y": int(rest[1]), "z": int(rest[2])})
+
+    # ── World lifecycle ───────────────────────────────────────────────────────
+    elif subcmd == "worlds":
+        call_tool("list_worlds", {})
+
+    elif subcmd == "load":
+        if not rest:
+            print("Usage: oc2dbg load <world_id>", file=sys.stderr); sys.exit(1)
+        call_tool("load_world", {"id": rest[0]})
+
+    elif subcmd == "quit":
+        call_tool("save_and_quit", {})
+
+    elif subcmd == "new_world":
+        p = argparse.ArgumentParser(prog="oc2dbg new_world")
+        p.add_argument("name", nargs="?", default=None)
+        p.add_argument("--flat", action="store_true")
+        p.add_argument("--seed", default="")
+        p.add_argument("--mode", default="creative")
+        ns = p.parse_args(rest)
+        args_dict: dict = {"gamemode": ns.mode, "flat": ns.flat}
+        if ns.name:
+            args_dict["name"] = ns.name
+        if ns.seed:
+            args_dict["seed"] = ns.seed
+        call_tool("create_world", args_dict)
+
+    # ── UI navigation ─────────────────────────────────────────────────────────
+    elif subcmd == "click":
+        if not rest:
+            print("Usage: oc2dbg click <button_label>", file=sys.stderr); sys.exit(1)
+        label = " ".join(rest)
+        call_tool("click_ui_button", {"label": label})
+
+    elif subcmd == "wait_screen":
+        screen = rest[0] if rest else None
+        call_tool("wait_for_screen", {"screen": screen})
+
+    # ── Player control ────────────────────────────────────────────────────────
+    elif subcmd == "look":
+        if len(rest) < 2:
+            print("Usage: oc2dbg look <yaw> <pitch>", file=sys.stderr); sys.exit(1)
+        call_tool("set_look", {"yaw": float(rest[0]), "pitch": float(rest[1])})
+
+    elif subcmd == "input":
+        # Last token is ticks, everything before is key names
+        if len(rest) < 2:
+            print("Usage: oc2dbg input [keys...] <ticks>", file=sys.stderr); sys.exit(1)
+        ticks = int(rest[-1])
+        keys = rest[:-1]
+        valid = {"forward", "back", "left", "right", "jump", "sprint", "attack", "use"}
+        args_dict = {"ticks": ticks}
+        for k in keys:
+            if k not in valid:
+                print(f"Unknown key '{k}'. Valid: {', '.join(sorted(valid))}", file=sys.stderr); sys.exit(1)
+            args_dict[k] = True
+        call_tool("send_input", args_dict)
+
+    elif subcmd == "teleport":
+        if len(rest) < 3:
+            print("Usage: oc2dbg teleport <x> <y> <z>", file=sys.stderr); sys.exit(1)
+        call_tool("teleport", {"x": float(rest[0]), "y": float(rest[1]), "z": float(rest[2])})
+
+    elif subcmd == "fly_speed":
+        if not rest:
+            print("Usage: oc2dbg fly_speed <multiplier>   (1.0 = default 0.05)", file=sys.stderr); sys.exit(1)
+        speed = float(rest[0]) * 0.05
+        call_tool("dispatch_command", {"command": f"attribute @p minecraft:player.flying_speed base set {speed:.4f}"})
+
+    # ── Server commands ───────────────────────────────────────────────────────
+    elif subcmd == "cmd":
+        if not rest:
+            print("Usage: oc2dbg cmd <command...>", file=sys.stderr); sys.exit(1)
+        call_tool("dispatch_command", {"command": " ".join(rest).lstrip("/")})
+
+    # ── OC2 computers ─────────────────────────────────────────────────────────
+    elif subcmd == "computers":
+        call_tool("list_computers", {})
+
+    elif subcmd == "console":
+        if not rest:
+            print("Usage: oc2dbg console <computer_id>", file=sys.stderr); sys.exit(1)
+        call_tool("read_computer_console", {"computer_id": rest[0]})
+
+    elif subcmd == "run":
+        if len(rest) < 2:
+            print("Usage: oc2dbg run <computer_id> <script>", file=sys.stderr); sys.exit(1)
+        call_tool("run_computer_command", {"computer_id": rest[0], "command": " ".join(rest[1:])})
+
+    # ── Generic ───────────────────────────────────────────────────────────────
+    elif subcmd == "call":
+        if not rest:
+            print("Usage: oc2dbg call <tool> ['{...}']", file=sys.stderr); sys.exit(1)
+        tool = rest[0]
+        raw = rest[1] if len(rest) > 1 else "{}"
+        call_tool(tool, json.loads(raw))
+
+    elif subcmd == "list":
+        cmd_list()
+
+    else:
+        print(f"Unknown subcommand: '{subcmd}'\nRun 'oc2dbg --help' for usage.", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

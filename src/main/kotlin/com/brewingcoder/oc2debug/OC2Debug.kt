@@ -1,32 +1,21 @@
 package com.brewingcoder.oc2debug
 
 import com.brewingcoder.oc2debug.mcp.McpHttpServer
+import com.brewingcoder.oc2debug.tool.AsyncJobRegistry
 import net.neoforged.bus.api.SubscribeEvent
 import net.neoforged.fml.common.EventBusSubscriber
 import net.neoforged.fml.common.Mod
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent
+import net.neoforged.neoforge.common.NeoForge
+import net.neoforged.neoforge.event.level.LevelEvent
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
 
-/**
- * OC2-Debug — dev-time companion mod that embeds an MCP server inside Minecraft.
- *
- * Lets Claude (or any MCP client) drive the running game programmatically:
- *   - Take MC-window screenshots (with metadata) instead of full desktop captures
- *   - Read/write block states + BlockEntity NBT
- *   - Simulate player interactions (right-click, left-click)
- *   - Dispatch vanilla commands as a fallback
- *
- * Server starts on FMLClientSetup (client-side only — debug tool, never ships
- * to a real server). Default port: 9876, configurable.
- *
- * NOT shipped with OC2 production. Lives in its own jar, loaded only in dev
- * environments alongside OC2.
- */
 @Mod(OC2Debug.ID)
 @EventBusSubscriber(bus = EventBusSubscriber.Bus.MOD)
 object OC2Debug {
     const val ID = "oc2debug"
+    const val DEFAULT_PORT = 9876
     val LOGGER: Logger = LogManager.getLogger(ID)
 
     private var server: McpHttpServer? = null
@@ -36,12 +25,21 @@ object OC2Debug {
         val port = System.getenv("OC2DEBUG_PORT")?.toIntOrNull() ?: DEFAULT_PORT
         LOGGER.info("Starting OC2-Debug MCP server on 127.0.0.1:{}", port)
         server = McpHttpServer(port).also { it.start() }
-        // Shutdown hook — stop the server cleanly on JVM exit
         Runtime.getRuntime().addShutdownHook(Thread {
             LOGGER.info("Shutting down OC2-Debug MCP server")
             server?.stop()
         })
+        // Cancel async jobs on world unload so they don't block shutdown.
+        NeoForge.EVENT_BUS.addListener { _: LevelEvent.Unload ->
+            AsyncJobRegistry.cancelAll()
+        }
+        // Re-apply persistent dev-helper effects every 200 ticks (~10s).
+        var devHelpersTickCounter = 0
+        NeoForge.EVENT_BUS.addListener { e: net.neoforged.neoforge.event.tick.ServerTickEvent.Post ->
+            if (++devHelpersTickCounter >= 200) {
+                devHelpersTickCounter = 0
+                com.brewingcoder.oc2debug.tool.DevHelpers.onServerTick(e.server)
+            }
+        }
     }
-
-    const val DEFAULT_PORT = 9876
 }

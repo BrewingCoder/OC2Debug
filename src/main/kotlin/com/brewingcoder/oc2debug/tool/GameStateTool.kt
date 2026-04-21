@@ -46,6 +46,7 @@ object GameStateTool : Tool(
 
             val dim = level?.dimension()?.location()?.toString()
 
+            val oc2Build = System.getProperty("oc2.buildId", "unknown")
             buildString {
                 append("{")
                 append("\"in_world\":${level != null},")
@@ -55,7 +56,8 @@ object GameStateTool : Tool(
                 append("\"player\":$playerJson,")
                 append("\"integrated_server\":${mc.singleplayerServer != null},")
                 append("\"fps\":${mc.fps},")
-                append("\"window\":[${mc.window.guiScaledWidth},${mc.window.guiScaledHeight}]")
+                append("\"window\":[${mc.window.guiScaledWidth},${mc.window.guiScaledHeight}],")
+                append("\"oc2_build\":\"$oc2Build\"")
                 append("}")
             }
         }

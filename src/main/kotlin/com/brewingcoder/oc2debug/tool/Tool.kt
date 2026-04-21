@@ -42,7 +42,11 @@ abstract class Tool(
         server.execute {
             try { future.complete(block(server)) } catch (e: Throwable) { future.completeExceptionally(e) }
         }
-        return future.get(THREAD_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        try {
+            return future.get(THREAD_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.ExecutionException) {
+            throw e.cause ?: e
+        }
     }
 
     protected fun JsonObject.intOr(key: String, default: Int): Int =
@@ -58,7 +62,7 @@ abstract class Tool(
         if (has(key)) get(key).asString else default
 
     companion object {
-        private const val THREAD_TIMEOUT_SECONDS = 30L
+        private const val THREAD_TIMEOUT_SECONDS = 120L
         @JvmStatic protected val LOGGER = OC2Debug.LOGGER
     }
 }

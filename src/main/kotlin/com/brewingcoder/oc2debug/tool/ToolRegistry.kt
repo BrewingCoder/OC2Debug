@@ -6,22 +6,44 @@ package com.brewingcoder.oc2debug.tool
  */
 object ToolRegistry {
     val tools: Map<String, Tool> = listOf(
+        // State / observation
         GameStateTool,
         ScreenshotTool,
         GetBlockTool,
         SetBlockTool,
         SimulateRightClickTool,
         WaitTicksTool,
+        // World lifecycle — full end-to-end automation
+        ListWorldsTool,
+        LoadWorldTool,
+        SaveAndQuitTool,
+        CreateWorldTool,
+        // UI navigation
+        ClickUiButtonTool,
+        WaitForScreenTool,
+        // Player control
+        SetLookTool,
+        SendInputTool,
+        TeleportTool,
+        SetFlySpeedTool,
+        // Commands
         DispatchCommandTool,
+        // OC2 computer / peripheral tooling
         ListComputersTool,
         ReadComputerConsoleTool,
         WriteComputerFileTool,
         RunComputerCommandTool,
+        ReadMonitorTool,
+        // Async job polling
+        PollJobTool,
+        // World / environment
         FindBiomeTool,
-        TeleportTool,
         ScanChunkTool,
         ScanAreaTool,
+        FindBlocksTool,
+        GetBlocksTool,
         GetInventoryTool,
-        ReadMonitorTool,
+        // Dev helpers
+        ToggleDevEffectTool,
     ).associateBy { it.name }
 }

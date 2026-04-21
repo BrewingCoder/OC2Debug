@@ -12,18 +12,19 @@ import net.minecraft.world.level.biome.Biome
  * matches the requested namespaced id.
  *
  * Args:
- *   - `biome`   (string, required)  — `"minecraft:plains"`, `"biomesoplenty:lush_grassland"`, etc.
- *   - `radius`  (int, optional, default 6400)  — search radius in blocks
- *   - `from`    (object {x,y,z}, optional)  — search origin; defaults to the player
+ *   - `biome`        (string, required)  — `"minecraft:plains"`, `"biomesoplenty:lush_grassland"`, etc.
+ *   - `radius`       (int, optional, default 6400)  — search radius in blocks
+ *   - `from`         (object {x,y,z}, optional)  — search origin; defaults to the player
+ *   - `deep_search`  (bool, optional, default false) — also search underground vertically (slower)
  *
  * Returns JSON:
  *   `{"found":true, "x":..., "y":..., "z":..., "biome":"<id>"}` on hit
  *   `{"found":false, "biome":"<id>", "radius":N}` if not within radius
  *   `{"error":"<reason>"}` if the biome id is unknown / no player loaded
  *
- * Cost: scales with radius — vanilla samples every 32 blocks horizontally + 32
- * vertically. 6400 ≈ Nature's Compass default; usually returns within a few
- * hundred ms.
+ * Cost: default mode samples every 32 blocks horizontally, once vertically (surface biomes
+ * only). deep_search adds 6 vertical levels. 6400 radius ≈ Nature's Compass default;
+ * returns in a few seconds at that radius.
  */
 object FindBiomeTool : Tool(
     name = "find_biome",
@@ -32,6 +33,7 @@ object FindBiomeTool : Tool(
         {"type":"object","required":["biome"],"properties":{
           "biome":{"type":"string"},
           "radius":{"type":"integer"},
+          "deep_search":{"type":"boolean"},
           "from":{"type":"object","properties":{
             "x":{"type":"integer"},"y":{"type":"integer"},"z":{"type":"integer"}
           }}
@@ -41,35 +43,52 @@ object FindBiomeTool : Tool(
     override fun invoke(args: JsonObject): String {
         val biomeIdStr = args.strReq("biome")
         val radius = args.intOr("radius", 6400)
+        val deepSearch = args.has("deep_search") && args.get("deep_search").asBoolean
 
-        return onServer { server ->
-            val player = server.playerList.players.firstOrNull()
-                ?: return@onServer """{"error":"no player loaded"}"""
-            val level = (player.serverLevel())
+        // Validate biome id and capture origin synchronously on the server thread,
+        // then hand the long-running search off to an async job so the HTTP request
+        // returns immediately instead of timing out.
+        data class SearchParams(
+            val level: net.minecraft.server.level.ServerLevel,
+            val origin: BlockPos,
+            val targetHolder: Holder<Biome>,
+            val deepSearch: Boolean,
+        )
 
-            // Resolve the requested biome id into a Holder<Biome> for the predicate.
-            val biomeRl = ResourceLocation.tryParse(biomeIdStr)
-                ?: return@onServer """{"error":"invalid biome id: $biomeIdStr"}"""
-            val biomeRegistry = level.registryAccess().registryOrThrow(Registries.BIOME)
-            val biomeKey = biomeRegistry.getResourceKey(biomeRegistry.get(biomeRl) ?: run {
-                return@onServer """{"error":"unknown biome: $biomeIdStr"}"""
-            }).orElseThrow()
-            val targetHolder = biomeRegistry.getHolderOrThrow(biomeKey)
-
-            // Origin: explicit `from` if given, else player's current block pos.
-            val origin: BlockPos = if (args.has("from")) {
-                val from = args.getAsJsonObject("from")
-                BlockPos(from.intReq("x"), from.intReq("y"), from.intReq("z"))
-            } else {
-                player.blockPosition()
+        val params = try {
+            onServer { server ->
+                val player = server.playerList.players.firstOrNull()
+                    ?: error("no player loaded")
+                val level = player.serverLevel()
+                val biomeRl = ResourceLocation.tryParse(biomeIdStr)
+                    ?: error("invalid biome id: $biomeIdStr")
+                val biomeRegistry = level.registryAccess().registryOrThrow(Registries.BIOME)
+                val biomeKey = biomeRegistry.getResourceKey(
+                    biomeRegistry.get(biomeRl) ?: error("unknown biome: $biomeIdStr")
+                ).orElseThrow()
+                val origin: BlockPos = if (args.has("from")) {
+                    val from = args.getAsJsonObject("from")
+                    BlockPos(from.intReq("x"), from.intReq("y"), from.intReq("z"))
+                } else {
+                    player.blockPosition()
+                }
+                SearchParams(level, origin, biomeRegistry.getHolderOrThrow(biomeKey), deepSearch)
             }
+        } catch (e: Exception) {
+            val msg = e.message?.replace("\"", "\\\"") ?: "error"
+            return """{"error":"$msg"}"""
+        }
 
-            // findClosestBiome3d signature: (predicate, origin, radius, horizontalStep, verticalStep)
-            val pair = level.findClosestBiome3d(
-                { holder: Holder<Biome> -> holder == targetHolder },
-                origin,
+        val jobId = AsyncJobRegistry.submit {
+            // Surface biomes (the common case) only vary horizontally — one vertical
+            // sample per column is enough and makes the search ~6x faster.
+            // deep_search adds vertical resolution for cave/underground biomes.
+            val vStep = if (params.deepSearch) 64 else 384
+            val pair = params.level.findClosestBiome3d(
+                { holder: Holder<Biome> -> holder == params.targetHolder },
+                params.origin,
                 radius,
-                32, 64,
+                32, vStep,
             )
             if (pair == null) {
                 """{"found":false,"biome":"${esc(biomeIdStr)}","radius":$radius}"""
@@ -78,6 +97,7 @@ object FindBiomeTool : Tool(
                 """{"found":true,"x":${pos.x},"y":${pos.y},"z":${pos.z},"biome":"${esc(biomeIdStr)}"}"""
             }
         }
+        return """{"status":"searching","job_id":"$jobId","biome":"${esc(biomeIdStr)}","radius":$radius,"deep_search":$deepSearch}"""
     }
 
     private fun esc(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")
